@@ -1,0 +1,36 @@
+# CRITICAL FIXES NEEDED
+
+## Missing Python Packages
+
+### Whisper Service (services/whisper/whisper-env):
+- Installing: faster_whisper ? (in progress)
+- Already installed: uvicorn, fastapi, pydantic, websockets, python-dotenv
+
+### LLM Service (services/pollgen-llm/llm-env):
+Missing:
+- langchain_ollama
+- google-generativeai (for GoogleGenerativeAI)
+- pymongo (for MongoDB)
+- Additional LangChain integrations
+
+## Current Service Status:
+? Frontend: http://localhost:5174 - WORKING
+? Backend: http://localhost:3001 - WORKING  
+? MongoDB: mongodb://localhost:27017 - RUNNING
+? Whisper: Port 8000 - Installing faster_whisper
+? LLM: Port 5001 - Missing langchain_ollama & dependencies
+
+## Quick Fix Commands:
+
+# Install Whisper dependencies:
+cd "c:\Users\ADITYA\Desktop\NLP\poll-automation\services\whisper"
+.\whisper-env\Scripts\python.exe -m pip install faster_whisper
+
+# Install LLM dependencies:
+cd "c:\Users\ADITYA\Desktop\NLP\poll-automation\services\pollgen-llm"
+.\llm-env\Scripts\python.exe -m pip install langchain_ollama google-generativeai pymongo
+
+## Next Steps:
+1. Wait for faster_whisper install to finish
+2. Run LLM install command
+3. Use FINAL-WORKING-START.ps1 to launch all services
