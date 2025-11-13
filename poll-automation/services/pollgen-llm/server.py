@@ -1,5 +1,6 @@
 import os
 import pathlib
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,6 +29,9 @@ from pymongo import MongoClient
 mongo_client = MongoClient("mongodb://localhost:27017/")
 mongo_collection = mongo_client["pollgen"]["pollquestions"]
 manual_collection = mongo_client["pollgen"]["manualquestions"]
+
+BACKEND_API_URL = os.getenv("BACKEND_API_URL") or "http://localhost:3000"
+LETTER_TO_INDEX = {chr(65 + i): i for i in range(26)}
 
 # FastAPI app setup
 app = FastAPI()
@@ -81,6 +85,100 @@ class PollData(BaseModel):
     timerUnit: str
     shortAnswerPlaceholder: Optional[str] = ""
 
+def sanitize_room_code(value):
+    if not value:
+        return ""
+    return "".join(ch for ch in value if str(ch).isalnum()).upper()
+
+
+def strip_option_text(option):
+    if not isinstance(option, str):
+        return ""
+    cleaned = option.strip()
+    if len(cleaned) >= 2 and cleaned[1] in (")", ".") and cleaned[0].isalpha():
+        return cleaned[2:].strip()
+    return cleaned
+
+
+def prepare_backend_questions(raw_questions):
+    prepared = []
+    for item in raw_questions or []:
+        if not isinstance(item, dict):
+            continue
+        question_text = item.get("question")
+        if not isinstance(question_text, str) or not question_text.strip():
+            continue
+        options_raw = item.get("options") or []
+        options = []
+        for opt in options_raw:
+            text = strip_option_text(opt)
+            if text:
+                options.append(text)
+        if not options:
+            continue
+        correct_value = item.get("correct_answer")
+        correct_index = None
+        if isinstance(correct_value, str) and correct_value.strip():
+            letter = correct_value.strip().upper()[0]
+            correct_index = LETTER_TO_INDEX.get(letter)
+        if correct_index is not None and (correct_index < 0 or correct_index >= len(options)):
+            correct_index = None
+        difficulty_value = item.get("difficulty")
+        difficulty = "Medium"
+        if isinstance(difficulty_value, str) and difficulty_value.strip():
+            difficulty = difficulty_value.strip().capitalize()
+        metadata = {}
+        concept_value = item.get("concept")
+        explanation_value = item.get("explanation")
+        if isinstance(concept_value, str) and concept_value.strip():
+            metadata["concept"] = concept_value.strip()
+            metadata["tags"] = [concept_value.strip()]
+        if isinstance(explanation_value, str) and explanation_value.strip():
+            metadata["explanation"] = explanation_value.strip()
+        payload = {
+            "question": question_text.strip(),
+            "options": options,
+            "difficulty": difficulty,
+            "status": "approved",  # Auto-approve questions
+            "timeLimit": 30,
+            "source": "ai",
+            "confidence": 90  # High confidence to trigger auto-approval
+        }
+        if correct_index is not None:
+            payload["correctAnswerIndex"] = correct_index
+        if metadata:
+            payload["metadata"] = metadata
+        prepared.append(payload)
+    return prepared
+
+
+async def push_questions_to_backend(room_code, raw_questions):
+    if not room_code:
+        print("⚠️ No room code provided, skipping question push")
+        return
+    prepared = prepare_backend_questions(raw_questions)
+    if not prepared:
+        print("⚠️ No valid questions to push")
+        return
+    
+    url = f"{BACKEND_API_URL.rstrip('/')}/api/rooms/{room_code}/questions/ai"
+    print(f"🚀 Pushing {len(prepared)} questions to {url}")
+    print("📝 First question preview:", json.dumps(prepared[0], indent=2))
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json={"questions": prepared})
+            print(f"📡 Backend response status: {response.status_code}")
+            if response.status_code >= 300:
+                print("❌ Failed to push AI questions:", response.status_code)
+                print("Response text:", response.text)
+            else:
+                print("✅ Successfully pushed questions to backend")
+                response_data = response.json()
+                print("Backend response:", json.dumps(response_data, indent=2))
+    except Exception as exc:
+        print("💥 Error pushing AI questions to backend:", str(exc))
+
 # === API Endpoints ===
 @app.post("/settings")
 def save_settings(settings: Settings):
@@ -110,6 +208,9 @@ async def ws_llm(websocket: WebSocket):
             try:
                 data = json.loads(raw_message)
 
+                meeting_id = data.get("meetingId")
+                room_code = sanitize_room_code(meeting_id)
+
                 if not isinstance(data.get("transcripts"), list):
                     print("Invalid or missing 'transcripts' array.")
                     continue
@@ -136,25 +237,61 @@ async def ws_llm(websocket: WebSocket):
                     print("Generation failed or returned empty list")
                     continue
 
+                await push_questions_to_backend(room_code, questions)
+
                 print("Generated Questions:\n", json.dumps(questions, indent=2))
 
                 now = datetime.utcnow()
                 enriched = []
                 for q in questions:
-                    enriched.append({
-                        "question": q.get("question"),
-                        "options": q.get("options"),
-                        "correct_answer": q.get("correct_answer"),
-                        "explanation": q.get("explanation"),
+                    if not isinstance(q, dict):
+                        continue
+                    question_text = q.get("question")
+                    if not isinstance(question_text, str) or not question_text.strip():
+                        continue
+                    option_values = q.get("options") or []
+                    options_clean = []
+                    for option in option_values:
+                        text = strip_option_text(option)
+                        if text:
+                            options_clean.append(text)
+                    if not options_clean:
+                        continue
+                    correct_value = q.get("correct_answer")
+                    correct_index = None
+                    if isinstance(correct_value, str) and correct_value.strip():
+                        letter = correct_value.strip().upper()[0]
+                        correct_index = LETTER_TO_INDEX.get(letter)
+                        if correct_index is not None and correct_index >= len(options_clean):
+                            correct_index = None
+                    explanation_value = q.get("explanation")
+                    concept_value = q.get("concept")
+                    metadata = {}
+                    if isinstance(concept_value, str) and concept_value.strip():
+                        metadata["concept"] = concept_value.strip()
+                    if isinstance(explanation_value, str) and explanation_value.strip():
+                        metadata["explanation"] = explanation_value.strip()
+                    record = {
+                        "question": question_text.strip(),
+                        "options": options_clean,
+                        "correct_answer": correct_value,
+                        "correct_answer_index": correct_index,
+                        "explanation": explanation_value,
                         "difficulty": q.get("difficulty"),
-                        "concept": q.get("concept"),
+                        "concept": concept_value,
+                        "meeting_id": meeting_id,
+                        "room_code": room_code,
                         "created_at": now,
                         "is_active": True,
                         "is_approved": False
-                    })
+                    }
+                    if metadata:
+                        record["metadata"] = metadata
+                    enriched.append(record)
 
-                mongo_collection.insert_many(enriched)
-                print(f"Saved {len(enriched)} questions to MongoDB")
+                if enriched:
+                    mongo_collection.insert_many(enriched)
+                    print(f"Saved {len(enriched)} questions to MongoDB")
 
             except Exception as e:
                 print("Error processing transcript:", e)

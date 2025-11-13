@@ -54,17 +54,42 @@ async def process_audio(state: ClientState, websocket: WebSocket):
             state.audio_buffer.write(audio_chunk)
 
             if state.audio_buffer.getbuffer().nbytes >= SILENCE_THRESHOLD:
-                print(f"📦 [{state.guest_id}] Buffer size: {state.audio_buffer.getbuffer().nbytes} bytes")
-                state.audio_buffer.seek(0)
+                try:
+                    buffer_size = state.audio_buffer.getbuffer().nbytes
+                    print(f"📦 [{state.guest_id}] Buffer size: {buffer_size} bytes")
+                    state.audio_buffer.seek(0)
 
-                print(f"🎧 [{state.guest_id}] Transcribing {state.audio_buffer.getbuffer().nbytes} bytes (WAV)")
-                segments, _ = model.transcribe(BytesIO(state.audio_buffer.getvalue()), language="en")
+                    print(f"🎧 [{state.guest_id}] Transcribing {buffer_size} bytes (WAV)")
+                    
+                    # Wrap transcription in try-except
+                    try:
+                        segments, info = model.transcribe(BytesIO(state.audio_buffer.getvalue()), language="en")
+                        print(f"ℹ️ Transcription info: {info}")
+                    except Exception as e:
+                        print(f"💥 Transcription error: {str(e)}")
+                        state.audio_buffer = BytesIO()
+                        continue
 
-                full_text = " ".join([seg.text for seg in segments])
-                print(f"📝 [{state.guest_id}] Transcription: {full_text}")
+                    full_text = " ".join([seg.text for seg in segments]).strip()
+                    print(f"📝 [{state.guest_id}] Raw transcription result: {full_text!r}")
+
+                    if not full_text:  # Empty text check
+                        print(f"⚠️ [{state.guest_id}] Empty transcription detected - skipping")
+                        state.audio_buffer = BytesIO()
+                        continue
+                except Exception as e:
+                    print(f"💥 Buffer processing error: {str(e)}")
+                    state.audio_buffer = BytesIO()
+                    continue
 
                 if is_hallucinated_text(full_text):
-                    print(f"⚠️ [{state.guest_id}] Skipped sending hallucinated/empty transcription.")
+                    print(f"⚠️ [{state.guest_id}] Skipped sending hallucinated transcription.")
+                    state.audio_buffer = BytesIO()
+                    continue
+
+                # Ensure all required fields are present
+                if not state.guest_id or not state.meeting_id:
+                    print(f"⚠️ Missing required fields: guestId={state.guest_id}, meetingId={state.meeting_id}")
                     state.audio_buffer = BytesIO()
                     continue
 

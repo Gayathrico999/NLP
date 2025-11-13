@@ -1,23 +1,57 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Hash, Users, Clock, User, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Hash, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import PollQuestionsPage from './PollQuestionsPage';
+
+const API_BASE_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3000';
+
+interface RoomInfo {
+  title: string;
+  host?: string;
+  participants: number;
+  timeRemaining: string;
+  status?: string;
+  settings?: Record<string, unknown>;
+  aiSettings?: Record<string, unknown>;
+}
 
 const JoinPollPage: React.FC = () => {
   const navigate = useNavigate();
   const [roomCode, setRoomCode] = useState('');
   const [isValidating, setIsValidating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
-  const [roomInfo, setRoomInfo] = useState<any>(null);
+  const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [error, setError] = useState('');
   const [joinStatus, setJoinStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   // Format room code as user types (ABC-123 format)
+  const sanitizeRoomCode = (value: string) => value.replace(/[^A-Z0-9]/g, '').toUpperCase();
+
   const formatRoomCode = (value: string) => {
-    const cleaned = value.replace(/[^A-Z0-9]/g, '').toUpperCase();
+    const cleaned = sanitizeRoomCode(value);
     if (cleaned.length <= 3) return cleaned;
     return `${cleaned.slice(0, 3)}-${cleaned.slice(3, 6)}`;
+  };
+
+  const formatTimeRemaining = (isoDate: string | undefined) => {
+    if (!isoDate) {
+      return 'Active';
+    }
+    const expiry = new Date(isoDate);
+    if (Number.isNaN(expiry.getTime())) {
+      return 'Active';
+    }
+    const diff = expiry.getTime() - Date.now();
+    if (diff <= 0) {
+      return 'Expired';
+    }
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours > 0) {
+      return `${hours}h ${remainingMinutes}m`;
+    }
+    return `${Math.max(remainingMinutes, 1)}m`;
   };
 
   const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -34,50 +68,42 @@ const JoinPollPage: React.FC = () => {
   };
 
   const validateRoomCode = async (code: string) => {
+    const normalized = sanitizeRoomCode(code);
+    if (normalized.length !== 6) {
+      setError('Enter a valid room code.');
+      setRoomInfo(null);
+      return;
+    }
+
     setIsValidating(true);
     setError('');
 
     try {
-      // Simulate API call to validate room code
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Mock room validation logic
-      const mockRooms = {
-        'ABC-123': {
-          title: 'Mathematics Quiz - Chapter 5',
-          host: 'Dr. Smith',
-          participants: 24,
-          timeRemaining: '45 minutes',
-          status: 'active'
-        },
-        'XYZ-789': {
-          title: 'History Discussion',
-          host: 'Prof. Johnson',
-          participants: 18,
-          timeRemaining: '12 minutes',
-          status: 'active'
-        },
-        'DEF-456': {
-          title: 'Science Lab Poll',
-          host: 'Dr. Brown',
-          participants: 0,
-          timeRemaining: 'Expired',
-          status: 'expired'
-        }
-      };
-
-      const room = mockRooms[code as keyof typeof mockRooms];
-      
-      if (room) {
-        if (room.status === 'expired') {
-          setError('This room has expired. Please contact your instructor for a new room code.');
-        } else {
-          setRoomInfo(room);
-        }
-      } else {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${normalized}`);
+      if (!response.ok) {
+        setRoomInfo(null);
         setError('Invalid room code. Please check and try again.');
+        return;
       }
-    } catch (err) {
+
+      const data = await response.json();
+      if (data.status && data.status !== 'active') {
+        setRoomInfo(null);
+        setError('This room is not active. Please contact your instructor.');
+        return;
+      }
+      setRoomInfo({
+        title: data.roomName ?? 'Active Poll',
+        host: data.hostName ?? 'Host',
+        participants: data.participants ?? 0,
+        timeRemaining: formatTimeRemaining(data.expiresAt),
+        status: data.status,
+        settings: data.settings,
+        aiSettings: data.aiSettings,
+      });
+      setRoomCode(formatRoomCode(data.roomCode || normalized));
+    } catch {
+      setRoomInfo(null);
       setError('Failed to validate room code. Please try again.');
     } finally {
       setIsValidating(false);
@@ -105,7 +131,7 @@ const JoinPollPage: React.FC = () => {
         });
       }, 1500);
       
-    } catch (err) {
+    } catch {
       setJoinStatus('error');
       setError('Failed to join the poll. Please try again.');
     } finally {

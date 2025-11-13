@@ -3,11 +3,12 @@ import http from 'http';
 import dotenv from 'dotenv';
 import cors from 'cors';
 
-import { setupWebSocketServer } from './ws/ws-server';
+import { setupWebSocketServer } from './ws/ws-server-clean';
 import settingsRouter from './web/routes/settings';
 import saveQuestionsRouter from './web/routes/save_questions';
 import pollConfigRoutes from './web/routes/pollConfigRoutes';
 import transcriptsRouter from './web/routes/transcripts';
+import roomRoutes from './web/routes/rooms';
 import { connectDB } from './web/config/dbconnect';
 
 dotenv.config();
@@ -23,6 +24,7 @@ app.use(express.json());
 app.use('/settings', settingsRouter);
 app.use('/manual_poll_questions', saveQuestionsRouter);
 app.use('/api/poll', pollConfigRoutes);
+app.use('/api/rooms', roomRoutes);
 app.use('/transcripts', transcriptsRouter);
 
 app.get('/', (_req, res) => {

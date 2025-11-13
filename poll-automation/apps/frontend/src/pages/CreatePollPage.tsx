@@ -23,6 +23,8 @@ import GlassCard from "../components/GlassCard"
 import DashboardLayout from "../components/DashboardLayout"
 import * as XLSX from "xlsx"
 
+const API_BASE_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:3000"
+
 interface StudentInvite {
   name: string
   email: string
@@ -46,30 +48,50 @@ const CreatePollPage: React.FC = () => {
   const [roomName, setRoomName] = useState("");
   const [roomNameError, setRoomNameError] = useState("");
 
-  // Load poll session from localStorage if active
   useEffect(() => {
-    const saved = localStorage.getItem(POLL_STORAGE_KEY);
-    if (saved) {
-      try {
-        const data = JSON.parse(saved);
-        if (data.isPollActive) {
-          setRoomCode(data.roomCode || "");
-          setRoomName(data.roomName || "");
-          setTimeRemaining(
-            typeof data.timeRemaining === "number"
-              ? data.timeRemaining
-              : 3 * 60 * 60
-          );
-          setIsPollActive(true);
-        } else {
+    const initialize = async () => {
+      const saved = localStorage.getItem(POLL_STORAGE_KEY);
+      if (saved) {
+        try {
+          const data = JSON.parse(saved);
+          if (data.isPollActive && data.roomCode) {
+            const formattedCode = formatRoomCode(data.roomCode);
+            setRoomCode(formattedCode);
+            setRoomName(data.roomName || "");
+            setTimeRemaining(
+              typeof data.timeRemaining === "number"
+                ? data.timeRemaining
+                : 3 * 60 * 60
+            );
+            setIsPollActive(true);
+            try {
+              const response = await fetch(`${API_BASE_URL}/api/rooms/${sanitizeRoomCode(data.roomCode)}`);
+              if (response.ok) {
+                const payload = await response.json();
+                setRoomCode(formatRoomCode(payload.roomCode || data.roomCode));
+                if (payload.roomName) {
+                  setRoomName(payload.roomName);
+                }
+              } else {
+                setIsPollActive(false);
+                setRoomName("");
+                setRoomCode(generateRoomCode());
+                localStorage.removeItem(POLL_STORAGE_KEY);
+              }
+            } catch {
+              setRoomCode(formattedCode);
+            }
+            return;
+          }
+        } catch {
           setRoomCode(generateRoomCode());
+          return;
         }
-      } catch {
-        setRoomCode(generateRoomCode());
       }
-    } else {
       setRoomCode(generateRoomCode());
-    }
+    };
+
+    void initialize();
   }, []);
 
   // Persist poll session to localStorage only if poll is active
@@ -96,7 +118,17 @@ const CreatePollPage: React.FC = () => {
     for (let i = 0; i < 6; i++) {
       result += characters.charAt(Math.floor(Math.random() * characters.length))
     }
-    return result
+    return `${result.slice(0, 3)}-${result.slice(3, 6)}`
+  }
+
+  const sanitizeRoomCode = (code: string): string => code.replace(/[^A-Z0-9]/g, "").toUpperCase()
+
+  const formatRoomCode = (code: string): string => {
+    const normalized = sanitizeRoomCode(code)
+    if (normalized.length <= 3) {
+      return normalized
+    }
+    return `${normalized.slice(0, 3)}-${normalized.slice(3, 6)}`
   }
 
   // Handle room code regeneration
@@ -106,17 +138,24 @@ const CreatePollPage: React.FC = () => {
     }
   }
 
-  // Handle destroy room
-  const handleDestroyRoom = () => {
+  const handleDestroyRoom = async () => {
     setIsDestroying(true)
-    setTimeout(() => {
-      setIsPollActive(false)
-      setTimeRemaining(3 * 60 * 60) // Reset to 3 hours
-      setRoomCode(generateRoomCode()) // Generate new code
-      setIsDestroying(false)
-      localStorage.removeItem(POLL_STORAGE_KEY) // Clear persisted session
-      console.log("Room destroyed and reset")
-    }, 1500)
+    const sanitized = sanitizeRoomCode(roomCode)
+    if (sanitized) {
+      try {
+        await fetch(`${API_BASE_URL}/api/rooms/${sanitized}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "ended" }),
+        })
+      } catch {
+      }
+    }
+    setIsPollActive(false)
+    setTimeRemaining(3 * 60 * 60)
+    setRoomCode(generateRoomCode())
+    setIsDestroying(false)
+    localStorage.removeItem(POLL_STORAGE_KEY)
   }
 
   // Format time remaining
@@ -294,19 +333,54 @@ const CreatePollPage: React.FC = () => {
     }, 2000)
   }
 
-  // Handle create poll
-  const handleCreatePoll = () => {
+  const handleCreatePoll = async () => {
     if (!roomName.trim()) {
       setRoomNameError("Room Name is required.");
       return;
     }
-    setRoomNameError(""); // Clear error if valid
+    setRoomNameError("");
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomName: roomName.trim(),
+          roomCode: sanitizeRoomCode(roomCode),
+          settings: {
+            questionFrequencyMinutes: 5,
+            questionsPerPoll: 3,
+            visibilityMinutes: 5,
+            difficulty: "Medium",
+          },
+          aiSettings: {
+            autoLaunch: false,
+            defaultTimer: 30,
+            enableNotifications: true,
+            aiConfidenceThreshold: 80,
+            autoApproveHighConfidence: false,
+            enableSmartFiltering: true,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to create room");
+      }
+
+      const data = await response.json();
+      if (data.roomCode) {
+        setRoomCode(formatRoomCode(data.roomCode));
+      }
+      if (data.roomName) {
+        setRoomName(data.roomName);
+      }
       setIsPollActive(true);
-      console.log("Poll created with room code:", roomCode);
-    }, 2000);
+    } catch (error) {
+      alert("Failed to create poll room");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
