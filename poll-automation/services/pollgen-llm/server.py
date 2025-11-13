@@ -154,30 +154,30 @@ def prepare_backend_questions(raw_questions):
 
 async def push_questions_to_backend(room_code, raw_questions):
     if not room_code:
-        print("⚠️ No room code provided, skipping question push")
+        print("Warning: No room code provided, skipping question push")
         return
     prepared = prepare_backend_questions(raw_questions)
     if not prepared:
-        print("⚠️ No valid questions to push")
+        print("Warning: No valid questions to push")
         return
     
     url = f"{BACKEND_API_URL.rstrip('/')}/api/rooms/{room_code}/questions/ai"
-    print(f"🚀 Pushing {len(prepared)} questions to {url}")
-    print("📝 First question preview:", json.dumps(prepared[0], indent=2))
+    print(f"Pushing {len(prepared)} questions to {url}")
+    print("First question preview:", json.dumps(prepared[0], indent=2))
     
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, json={"questions": prepared})
-            print(f"📡 Backend response status: {response.status_code}")
+            print(f"Backend response status: {response.status_code}")
             if response.status_code >= 300:
-                print("❌ Failed to push AI questions:", response.status_code)
+                print("Failed to push AI questions:", response.status_code)
                 print("Response text:", response.text)
             else:
-                print("✅ Successfully pushed questions to backend")
+                print("Successfully pushed questions to backend")
                 response_data = response.json()
                 print("Backend response:", json.dumps(response_data, indent=2))
     except Exception as exc:
-        print("💥 Error pushing AI questions to backend:", str(exc))
+        print("Error pushing AI questions to backend:", str(exc))
 
 # === API Endpoints ===
 @app.post("/settings")
