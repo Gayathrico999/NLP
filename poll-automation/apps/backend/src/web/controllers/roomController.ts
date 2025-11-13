@@ -176,21 +176,26 @@ export const getRoomQuestions = async (req: Request, res: Response): Promise<voi
       manualQuestions: room.questions.filter(q => q.source === 'manual').length,
     });
     
-    const questions = room.questions.filter((question) =>
-      statusFilter === 'all' ? true : question.status === statusFilter
-    );
+    const questions = room.questions
+      .filter((question) => (statusFilter === 'all' ? true : question.status === statusFilter))
+      .map((question) => {
+        const plainQuestion = (
+          typeof (question as any)?.toObject === 'function'
+            ? (question as any).toObject()
+            : { ...question }
+        ) as RoomQuestion & Record<string, unknown>;
 
-    // Enrich questions with room metadata
-    const enrichedQuestions = questions.map(q => ({
-      ...q,
-      roomMetadata: {
-        roomCode: formatRoomCode(room.code),
-        roomName: room.name,
-        hostName: room.hostName,
-        aiEnabled: room.aiSettings.autoLaunch,
-        questionFrequency: room.settings.questionFrequencyMinutes,
-      }
-    }));
+        return {
+          ...plainQuestion,
+          roomMetadata: {
+            roomCode: formatRoomCode(room.code),
+            roomName: room.name,
+            hostName: room.hostName,
+            aiEnabled: room.aiSettings.autoLaunch,
+            questionFrequency: room.settings.questionFrequencyMinutes,
+          },
+        };
+      });
 
     res.json({
       roomCode: formatRoomCode(room.code),
@@ -199,7 +204,7 @@ export const getRoomQuestions = async (req: Request, res: Response): Promise<voi
       status: room.status,
       settings: room.settings,
       aiSettings: room.aiSettings,
-      questions: enrichedQuestions,
+      questions,
     });
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch questions', error });
