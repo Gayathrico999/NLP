@@ -34,6 +34,22 @@ const AudioCapture = () => {
     parseInt(import.meta.env.VITE_CHUNK_INTERVAL || "5000")
   );
 
+
+  // Ensure meetingId aligns with the active room code so AI questions post to the correct room
+  const sanitizeRoomCode = (code: string) => (code || "").replace(/[^A-Z0-9]/g, "").toUpperCase();
+  const getEffectiveMeetingId = () => {
+    const fromQuery = new URLSearchParams(window.location.search).get("meetingId");
+    if (fromQuery) return sanitizeRoomCode(fromQuery);
+    try {
+      const saved = localStorage.getItem("activePollSession");
+      if (saved) {
+        const data = JSON.parse(saved);
+        if (data?.roomCode) return sanitizeRoomCode(data.roomCode);
+      }
+    } catch {}
+    return "ABC-123";
+  };
+
   useEffect(() => {
     const fetchMicrophones = async () => {
       const devices = await getMicrophones();
@@ -100,7 +116,7 @@ const AudioCapture = () => {
           JSON.stringify({
             type: "start",
             guestId: "host",
-            meetingId: (new URLSearchParams(window.location.search).get("meetingId") || "ABC-123"),
+            meetingId: getEffectiveMeetingId(),
           })
         );
 
@@ -344,7 +360,7 @@ const stopRecording = () => {
 
         <div>
           <Toaster position="top-right" reverseOrder={false} />
-          <GuestLinkGenerator meetingId={(new URLSearchParams(window.location.search).get("meetingId") || "ABC-123")} />
+          <GuestLinkGenerator meetingId={getEffectiveMeetingId()} />
         </div>
 
         <GlassCard className="p-6">

@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Settings, Save, RotateCcw, Zap, Check } from "lucide-react"
 import GlassCard from "./GlassCard"
@@ -16,6 +16,8 @@ interface AIControlPanelProps {
   isOpen: boolean
   onToggle: () => void
   showFloatingButton?: boolean
+  questionsPerPoll?: number
+  setQuestionsPerPoll?: (value: number) => void
 }
 
 interface AIConfig {
@@ -36,11 +38,56 @@ const defaultConfig: AIConfig = {
 }
 const defaultDifficulty = "all"
 
-const AIControlPanel: React.FC<AIControlPanelProps> = ({ isOpen, onToggle, showFloatingButton = true }) => {
+const AIControlPanel: React.FC<AIControlPanelProps> = ({ isOpen, onToggle, showFloatingButton = true, questionsPerPoll, setQuestionsPerPoll }) => {
   const [config, setConfig] = useState<AIConfig>(defaultConfig)
   const [difficulty, setDifficulty] = useState<string>(defaultDifficulty)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [showSavedPopup, setShowSavedPopup] = useState(false)
+
+  const llmApiBaseUrl = (import.meta.env.VITE_LLM_API_URL || "http://localhost:5001").replace(/\/$/, "")
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const response = await fetch(`${llmApiBaseUrl}/settings`)
+        if (!response.ok) {
+          return
+        }
+        const payload = await response.json()
+        const nextConfig: AIConfig = {
+          source: payload?.source === "ollama" ? "ollama" : "gemini",
+          frequency: typeof payload?.frequency === "number" ? payload.frequency : defaultConfig.frequency,
+          quantity: typeof payload?.quantity === "number" ? payload.quantity : defaultConfig.quantity,
+          types:
+            Array.isArray(payload?.types) && payload.types.length > 0
+              ? payload.types
+              : defaultConfig.types,
+          contextRange:
+            typeof payload?.contextRange === "string" ? payload.contextRange : defaultConfig.contextRange,
+          customRange: typeof payload?.customRange === "string" ? payload.customRange : undefined,
+        }
+        setConfig(nextConfig)
+        if (typeof payload?.difficulty === "string" && payload.difficulty) {
+          setDifficulty(payload.difficulty)
+        } else {
+          setDifficulty(defaultDifficulty)
+        }
+        if (typeof setQuestionsPerPoll === "function") {
+          setQuestionsPerPoll(nextConfig.quantity)
+        }
+        setHasUnsavedChanges(false)
+      } catch (error) {
+        console.error("Failed to load AI settings:", error)
+      }
+    }
+    void fetchSettings()
+  }, [llmApiBaseUrl, setQuestionsPerPoll])
+
+  useEffect(() => {
+    if (typeof questionsPerPoll === "number" && !Number.isNaN(questionsPerPoll)) {
+      setConfig((prev) => ({ ...prev, quantity: questionsPerPoll }))
+    }
+  }, [questionsPerPoll])
 
   const updateConfig = (updates: Partial<AIConfig>) => {
     setConfig((prev) => ({ ...prev, ...updates }))
@@ -53,28 +100,28 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({ isOpen, onToggle, showF
   }
 
   const handleSave = async () => {
-  try {
-    const response = await fetch("http://localhost:5001/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(config),
-    });
+    try {
+      const response = await fetch(`${llmApiBaseUrl}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      })
 
-    if (response.ok) {
-      console.log("Host Settings saved successfully!");
-      setHasUnsavedChanges(false);
-      setShowSavedPopup(true);
-      setTimeout(() => setShowSavedPopup(false), 3000);
-    } else {
-      alert("Failed to save Host Settings.");
+      if (response.ok) {
+        setHasUnsavedChanges(false)
+        if (typeof setQuestionsPerPoll === "function") {
+          setQuestionsPerPoll(config.quantity)
+        }
+        setShowSavedPopup(true)
+        setTimeout(() => setShowSavedPopup(false), 3000)
+      } else {
+        alert("Failed to save Host Settings.")
+      }
+    } catch (error) {
+      console.error("Error saving settings:", error)
+      alert("Network error occurred.")
     }
-  } catch (error) {
-    console.error("Error saving settings:", error);
-    alert("Network error occurred.");
   }
-
-  console.log("Saving AI configuration:", config);
-};
 
 
   const handleReset = () => {
@@ -82,6 +129,9 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({ isOpen, onToggle, showF
     const isDifficultyChanged = difficulty !== defaultDifficulty
     setConfig(defaultConfig)
     setDifficulty(defaultDifficulty)
+    if (typeof setQuestionsPerPoll === "function") {
+      setQuestionsPerPoll(defaultConfig.quantity)
+    }
     setHasUnsavedChanges(isConfigChanged || isDifficultyChanged)
   }
 
@@ -205,7 +255,12 @@ const AIControlPanel: React.FC<AIControlPanelProps> = ({ isOpen, onToggle, showF
             <GlassCard className="p-4">
               <QuestionQuantitySlider
                 quantity={config.quantity}
-                onQuantityChange={(quantity) => updateConfig({ quantity })}
+                onQuantityChange={(quantity) => {
+                  updateConfig({ quantity })
+                  if (typeof setQuestionsPerPoll === "function") {
+                    setQuestionsPerPoll(quantity)
+                  }
+                }}
               />
             </GlassCard>
 

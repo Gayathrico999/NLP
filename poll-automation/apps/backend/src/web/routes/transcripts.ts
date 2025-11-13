@@ -1,17 +1,17 @@
 // backend/web/routes/transcripts.ts
 import { Router } from 'express';
 
-let transcriptsRouter=Router();
+const transcriptsRouter = Router();
 
-let inMemoryTranscripts: any = {}; 
+let inMemoryTranscripts: Record<string, unknown> = {};
 
 transcriptsRouter.post("/realtime", async (req, res) => {
-    inMemoryTranscripts = req.body;
+    inMemoryTranscripts = req.body as Record<string, unknown>;
     console.log("Settings received and stored:", inMemoryTranscripts);
     res.json({ message: "Transcripts updated" });
 })
 
-transcriptsRouter.get("/realtime", (req, res) => {
+transcriptsRouter.get("/realtime", (_req, res) => {
   res.json(inMemoryTranscripts);
 });
 

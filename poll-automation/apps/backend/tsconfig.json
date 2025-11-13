@@ -15,5 +15,5 @@
     }
   },
   "include": ["src/**/*", "../../shared/types/src/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "src/ws/ws-server.ts"]
 }

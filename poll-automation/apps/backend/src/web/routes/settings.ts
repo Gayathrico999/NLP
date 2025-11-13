@@ -1,17 +1,16 @@
 import { Router } from "express";
-import fs from "fs";
 
 const settingsRouter = Router();
 
-let inMemorySettings: any = {}; 
+let inMemorySettings: Record<string, unknown> = {};
 
 settingsRouter.post("/settings", (req, res) => {
-  inMemorySettings = req.body;
+  inMemorySettings = req.body as Record<string, unknown>;
   console.log("Settings received and stored:", inMemorySettings);
   res.json({ message: "Settings updated" });
 });
 
-settingsRouter.get("/settings", (req, res) => {
+settingsRouter.get("/settings", (_req, res) => {
   res.json(inMemorySettings);
 });
 

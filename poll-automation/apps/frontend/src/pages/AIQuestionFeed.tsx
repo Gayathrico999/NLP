@@ -2,10 +2,33 @@
 
 import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Check, X, Edit3, Clock, Settings, Play } from "lucide-react"
+import { Check, X, Edit3, Clock, Settings, Play, Loader2 } from "lucide-react"
 import DashboardLayout from "../components/DashboardLayout"
 import GlassCard from "../components/GlassCard"
 import AIControlPanel from "../components/AIControlPanel"
+
+const API_BASE_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:3000"
+const POLL_STORAGE_KEY = "activePollSession"
+const sanitizeRoomCode = (code: string) => code.replace(/[^A-Z0-9]/g, "").toUpperCase()
+const formatRoomCode = (code: string) => {
+  const normalized = sanitizeRoomCode(code)
+  if (normalized.length <= 3) {
+    return normalized
+  }
+  return `${normalized.slice(0, 3)}-${normalized.slice(3, 6)}`
+}
+
+interface AIQuestion {
+  id: string
+  question: string
+  options: string[]
+  correct: number | null
+  difficulty: "Easy" | "Medium" | "Hard"
+  tags: string[]
+  confidence: number
+  status: "pending" | "approved" | "rejected"
+  timeEstimate: string
+}
 
 const AIQuestionFeed = () => {
   const [isScrolled, setIsScrolled] = useState(false)
@@ -21,70 +44,166 @@ const AIQuestionFeed = () => {
     return () => window.removeEventListener("scroll", handleScroll)
   }, [])
 
-  const [questions, setQuestions] = useState([
-    {
-      id: 1,
-      question: "What is the primary purpose of React hooks?",
-      options: [
-        "To replace class components entirely",
-        "To add state and lifecycle methods to functional components",
-        "To improve performance of React applications",
-        "To handle routing in React applications",
-      ],
-      correct: 1,
-      difficulty: "Medium",
-      tags: ["React", "Hooks", "Functional Components"],
-      confidence: 92,
-      status: "pending",
-      timeEstimate: "30s",
-    },
-    {
-      id: 2,
-      question: "Which method is used to update state in a functional component?",
-      options: ["this.setState()", "useState()", "updateState()", "setState()"],
-      correct: 1,
-      difficulty: "Easy",
-      tags: ["React", "State", "useState"],
-      confidence: 89,
-      status: "pending",
-      timeEstimate: "25s",
-    },
-    {
-      id: 3,
-      question: "What is the correct way to handle side effects in React?",
-      options: ["componentDidMount", "useEffect", "useCallback", "useMemo"],
-      correct: 1,
-      difficulty: "Medium",
-      tags: ["React", "Side Effects", "useEffect"],
-      confidence: 95,
-      status: "approved",
-      timeEstimate: "35s",
-    },
-  ])
+  const [activeRoomCode, setActiveRoomCode] = useState("")
+  const [questions, setQuestions] = useState<AIQuestion[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [loadError, setLoadError] = useState("")
+  const [refreshKey, setRefreshKey] = useState(0)
 
-  const [selectedQuestion, setSelectedQuestion] = useState<number | null>(null)
+  const [selectedQuestion, setSelectedQuestion] = useState<string | null>(null)
   const [isEditMode, setIsEditMode] = useState(false)
   const [autoLaunch, setAutoLaunch] = useState(false)
   const [timerEnabled, setTimerEnabled] = useState(true)
   const [defaultTimer, setDefaultTimer] = useState(30)
   const [isControlPanelOpen, setIsControlPanelOpen] = useState(false)
 
-  const handleApprove = (id: number) => {
-    setQuestions((prev) => prev.map((q) => (q.id === id ? { ...q, status: "approved" } : q)))
+  useEffect(() => {
+    const saved = localStorage.getItem(POLL_STORAGE_KEY)
+    if (saved) {
+      try {
+        const data = JSON.parse(saved)
+        if (data.roomCode) {
+          setActiveRoomCode(formatRoomCode(data.roomCode))
+        }
+      } catch {
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const sanitizedCode = sanitizeRoomCode(activeRoomCode)
+    if (!sanitizedCode) {
+      setQuestions([])
+      return
+    }
+
+    const fetchQuestions = async () => {
+      setIsLoading(true)
+      setLoadError("")
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/rooms/${sanitizedCode}/questions?status=all`)
+        if (!response.ok) {
+          throw new Error("Failed to load questions")
+        }
+        const data = await response.json()
+        const aiQuestions: AIQuestion[] = Array.isArray(data.questions)
+          ? data.questions
+              .filter((item: any) => item && item.source === "ai")
+              .map((item: any, index: number) => ({
+                id: String(item._id ?? item.id ?? index),
+                question: typeof item.text === "string" ? item.text : "",
+                options: Array.isArray(item.options) ? item.options : [],
+                correct: typeof item.correctAnswerIndex === "number" ? item.correctAnswerIndex : null,
+                difficulty: item.difficulty === "Easy" || item.difficulty === "Hard" ? item.difficulty : "Medium",
+                tags: Array.isArray(item.metadata?.tags) ? item.metadata.tags : [],
+                confidence: typeof item.metadata?.confidence === "number" ? Math.round(item.metadata.confidence) : 0,
+                status:
+                  item.status === "approved" || item.status === "rejected" || item.status === "pending"
+                    ? item.status
+                    : "pending",
+                timeEstimate: `${typeof item.timeLimit === "number" ? item.timeLimit : 30}s`,
+              }))
+          : []
+        setQuestions(aiQuestions)
+      } catch {
+        setLoadError("Unable to load AI questions for this room.")
+        setQuestions([])
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    void fetchQuestions()
+  }, [activeRoomCode, refreshKey])
+
+  const handleApprove = async (id: string) => {
+    const sanitizedCode = sanitizeRoomCode(activeRoomCode)
+    if (!sanitizedCode) {
+      setLoadError("Room code required to approve questions.")
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${sanitizedCode}/questions/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "approved" }),
+      })
+      if (!response.ok) {
+        throw new Error("Failed to update status")
+      }
+      setLoadError("")
+      setQuestions((prev) => prev.map((q) => (q.id === id ? { ...q, status: "approved" } : q)))
+    } catch {
+      setLoadError("Failed to update question status.")
+    }
   }
 
-  const handleReject = (id: number) => {
-    setQuestions((prev) => prev.map((q) => (q.id === id ? { ...q, status: "rejected" } : q)))
+  const handleReject = async (id: string) => {
+    const sanitizedCode = sanitizeRoomCode(activeRoomCode)
+    if (!sanitizedCode) {
+      setLoadError("Room code required to reject questions.")
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${sanitizedCode}/questions/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "rejected" }),
+      })
+      if (!response.ok) {
+        throw new Error("Failed to update status")
+      }
+      setLoadError("")
+      setQuestions((prev) => prev.map((q) => (q.id === id ? { ...q, status: "rejected" } : q)))
+    } catch {
+      setLoadError("Failed to update question status.")
+    }
   }
 
-  const handleEdit = (id: number) => {
+  const handleEdit = (id: string) => {
     setSelectedQuestion(id)
     setIsEditMode(true)
   }
 
-  const handleLaunch = (id: number) => {
-    console.log("Launching question:", id)
-    // Implementation for launching question
+  const handleLaunch = async (id: string) => {
+    await handleApprove(id)
+  }
+
+  const handleRegenerate = async () => {
+    const sanitizedCode = sanitizeRoomCode(activeRoomCode)
+    if (!sanitizedCode) {
+      setLoadError("Room code required to generate AI questions.")
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${sanitizedCode}/questions/ai`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questions: [
+            {
+              question: "Auto-generated review question",
+              options: ["Option A", "Option B", "Option C", "Option D"],
+              correctAnswerIndex: 0,
+              difficulty: "Medium",
+              timeLimit: defaultTimer,
+              status: "pending",
+              confidence: Math.floor(Math.random() * 21) + 70,
+            },
+          ],
+        }),
+      })
+      if (!response.ok) {
+        throw new Error("Failed to generate")
+      }
+      setLoadError("")
+      setRefreshKey((prev) => prev + 1)
+    } catch {
+      setLoadError("Failed to generate AI questions.")
+    }
   }
 
   const getDifficultyColor = (difficulty: string) => {
@@ -114,6 +233,7 @@ const AIQuestionFeed = () => {
   }
 
   const filteredQuestions = questions
+  const sanitizedActiveCode = sanitizeRoomCode(activeRoomCode)
 
   return (
 <DashboardLayout>
@@ -150,6 +270,39 @@ const AIQuestionFeed = () => {
       </div>
     </div>
 
+    <GlassCard className="p-4 bg-gray-800/50 border border-gray-700/50">
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div className="w-full sm:w-1/2">
+          <label className="block text-sm font-medium text-gray-300 mb-2">Active Room Code</label>
+          <input
+            type="text"
+            value={activeRoomCode}
+            onChange={(e) => setActiveRoomCode(formatRoomCode(e.target.value))}
+            placeholder="ABC-123"
+            maxLength={7}
+            className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500/40"
+          />
+          <p className="text-xs text-gray-400 mt-2">Link this feed to an active room to synchronize AI questions.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => setRefreshKey((prev) => prev + 1)}
+            disabled={!sanitizedActiveCode || isLoading}
+            className={`px-4 py-2 rounded-lg font-semibold text-white ${sanitizedActiveCode && !isLoading ? "bg-primary-500 hover:bg-primary-600" : "bg-gray-600 cursor-not-allowed"}`}
+          >
+            Refresh Questions
+          </motion.button>
+        </div>
+      </div>
+      {!sanitizedActiveCode && (
+        <p className="text-sm text-yellow-400 mt-2">No room code linked. Enter a code to load AI questions.</p>
+      )}
+      {loadError && (
+        <p className="text-sm text-red-400 mt-2">{loadError}</p>
+      )}
+    </GlassCard>
 
         {/* Controls */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -245,114 +398,146 @@ const AIQuestionFeed = () => {
   </div>
       <div className="space-y-4">
         <AnimatePresence>
-          {filteredQuestions.map((question, index) => (
+          {isLoading && (
             <motion.div
-              key={question.id}
-              initial={{ opacity: 0, y: 20 }}
+              key="loading"
+              initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              transition={{ delay: index * 0.1 }}
-              className="bg-white/5 rounded-lg border border-white/10 p-6 hover:border-white/20 transition-colors duration-200"
+              exit={{ opacity: 0, y: -10 }}
+              className="flex items-center justify-center py-10 text-gray-300"
             >
-              <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-4">
-                <div className="flex-1">
-                  <div className="flex flex-wrap items-center gap-2 mb-2">
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium border ${getDifficultyColor(question.difficulty)}`}
-                    >
-                      {question.difficulty}
-                    </span>
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium border ${getStatusColor(question.status)}`}
-                    >
-                      {question.status}
-                    </span>
-                    <div className="flex items-center space-x-1 text-gray-400">
-                      <Clock className="w-4 h-4" />
-                      <span className="text-xs">{question.timeEstimate}</span>
+              <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading AI questions...
+            </motion.div>
+          )}
+          {!isLoading && !sanitizedActiveCode && (
+            <motion.div
+              key="no-code"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="text-center py-8 text-yellow-300"
+            >
+              Enter a room code to view AI generated questions.
+            </motion.div>
+          )}
+          {!isLoading && sanitizedActiveCode && filteredQuestions.length === 0 && (
+            <motion.div
+              key="empty"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="text-center py-8 text-gray-300"
+            >
+              No AI questions available yet. Configure auto-generation or add new prompts.
+            </motion.div>
+          )}
+          {!isLoading && sanitizedActiveCode &&
+            filteredQuestions.map((question, index) => (
+              <motion.div
+                key={question.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ delay: index * 0.1 }}
+                className="bg-white/5 rounded-lg border border-white/10 p-6 hover:border-white/20 transition-colors duration-200"
+              >
+                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-4">
+                  <div className="flex-1">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <span
+                        className={`px-2 py-1 rounded-full text-xs font-medium border ${getDifficultyColor(question.difficulty)}`}
+                      >
+                        {question.difficulty}
+                      </span>
+                      <span
+                        className={`px-2 py-1 rounded-full text-xs font-medium border ${getStatusColor(question.status)}`}
+                      >
+                        {question.status}
+                      </span>
+                      <div className="flex items-center space-x-1 text-gray-400">
+                        <Clock className="w-4 h-4" />
+                        <span className="text-xs">{question.timeEstimate}</span>
+                      </div>
+                    </div>
+                    <h4 className="text-lg font-medium text-white mb-3">{question.question}</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                      {question.options.map((option, optionIndex) => (
+                        <div
+                          key={optionIndex}
+                          className={`p-2 rounded-lg text-sm ${optionIndex === question.correct
+                            ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                            : "bg-white/5 text-gray-300 border border-gray-600"
+                            }`}
+                        >
+                          {option}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {question.tags.map((tag, tagIndex) => (
+                        <span
+                          key={tagIndex}
+                          className="px-2 py-1 bg-primary-500/20 text-primary-400 rounded-full text-xs"
+                        >
+                          {tag}
+                        </span>
+                      ))}
                     </div>
                   </div>
-                  <h4 className="text-lg font-medium text-white mb-3">{question.question}</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-                    {question.options.map((option, optionIndex) => (
-                      <div
-                        key={optionIndex}
-                        className={`p-2 rounded-lg text-sm ${optionIndex === question.correct
-                          ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                          : "bg-white/5 text-gray-300 border border-gray-600"
-                          }`}
-                      >
-                        {option}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {question.tags.map((tag, tagIndex) => (
-                      <span
-                        key={tagIndex}
-                        className="px-2 py-1 bg-primary-500/20 text-primary-400 rounded-full text-xs"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex flex-row flex-wrap items-center gap-2 md:ml-4">
-                  {question.status === "pending" && (
-                    <>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => handleApprove(question.id)}
-                        className="p-2 bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30 transition-colors duration-200"
-                      >
-                        <Check className="w-4 h-4" />
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => handleReject(question.id)}
-                        className="p-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition-colors duration-200"
-                      >
-                        <X className="w-4 h-4" />
-                      </motion.button>
-                    </>
-                  )}
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => handleEdit(question.id)}
-                    className="p-2 bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 transition-colors duration-200"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                  </motion.button>
-                  {question.status === "approved" && (
+                  <div className="flex flex-row flex-wrap items-center gap-2 md:ml-4">
+                    {question.status === "pending" && (
+                      <>
+                        <motion.button
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.9 }}
+                          onClick={() => handleApprove(question.id)}
+                          className="p-2 bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30 transition-colors duration-200"
+                        >
+                          <Check className="w-4 h-4" />
+                        </motion.button>
+                        <motion.button
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.9 }}
+                          onClick={() => handleReject(question.id)}
+                          className="p-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition-colors duration-200"
+                        >
+                          <X className="w-4 h-4" />
+                        </motion.button>
+                      </>
+                    )}
                     <motion.button
                       whileHover={{ scale: 1.1 }}
                       whileTap={{ scale: 0.9 }}
-                      onClick={() => handleLaunch(question.id)}
-                      className="p-2 bg-primary-500/20 text-primary-400 rounded-lg hover:bg-primary-500/30 transition-colors duration-200"
+                      onClick={() => handleEdit(question.id)}
+                      className="p-2 bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 transition-colors duration-200"
                     >
-                      <Play className="w-4 h-4" />
+                      <Edit3 className="w-4 h-4" />
                     </motion.button>
-                  )}
+                    {question.status === "approved" && (
+                      <motion.button
+                        whileHover={{ scale: 1.1 }}
+                        whileTap={{ scale: 0.9 }}
+                        onClick={() => handleLaunch(question.id)}
+                        className="p-2 bg-primary-500/20 text-primary-400 rounded-lg hover:bg-primary-500/30 transition-colors duration-200"
+                      >
+                        <Play className="w-4 h-4" />
+                      </motion.button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            ))}
         </AnimatePresence>
       </div>
     </GlassCard>
     {/* Regenerate Questions Button */}
     <div className="flex flex-col sm:flex-row justify-start mt-4">
       <motion.button
-        onClick={() => {
-          console.log("Regenerating questions...")
-          // TODO: Add logic to regenerate questions here
-        }}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        className="px-5 py-2.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 backdrop-blur-md text-sm font-semibold rounded-lg shadow-md transition-all duration-200"
+        onClick={handleRegenerate}
+        disabled={!sanitizedActiveCode || isLoading}
+        whileHover={{ scale: !sanitizedActiveCode || isLoading ? 1 : 1.05 }}
+        whileTap={{ scale: !sanitizedActiveCode || isLoading ? 1 : 0.95 }}
+        className={`px-5 py-2.5 border text-sm font-semibold rounded-lg shadow-md transition-all duration-200 ${sanitizedActiveCode && !isLoading ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/30 hover:bg-indigo-500/30" : "bg-gray-600/40 text-gray-300 border-gray-700 cursor-not-allowed"}`}
       >
         🔁 Regenerate Questions
       </motion.button>

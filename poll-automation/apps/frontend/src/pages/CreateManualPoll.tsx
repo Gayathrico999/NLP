@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   CheckSquare,
@@ -17,6 +17,17 @@ import {
 // Imports for GlassCard and DashboardLayout were removed as they were causing resolution errors.
 import GlassCard from "../components/GlassCard"
 import DashboardLayout from "../components/DashboardLayout"
+
+const API_BASE_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:3000"
+const POLL_STORAGE_KEY = "activePollSession"
+const sanitizeRoomCode = (code: string) => code.replace(/[^A-Z0-9]/g, "").toUpperCase()
+const formatRoomCode = (code: string) => {
+  const normalized = sanitizeRoomCode(code)
+  if (normalized.length <= 3) {
+    return normalized
+  }
+  return `${normalized.slice(0, 3)}-${normalized.slice(3, 6)}`
+}
 
 // Interface for a single poll option
 interface PollOption {
@@ -41,6 +52,7 @@ interface ValidationErrors {
   title?: string
   options?: string
   timer?: string
+  roomCode?: string
 }
 
 const CreateManualPoll = () => {
@@ -58,8 +70,10 @@ const CreateManualPoll = () => {
     timerDuration: 30,
     timerUnit: "seconds",
     shortAnswerPlaceholder: "",
-    correctAnswer: undefined, // Initialize correctAnswer as undefined
+    correctAnswer: undefined,
   })
+
+  const [activeRoomCode, setActiveRoomCode] = useState("")
 
   // State for validation errors
   const [errors, setErrors] = useState<ValidationErrors>({})
@@ -67,6 +81,19 @@ const CreateManualPoll = () => {
   const [isSubmitting, setIsSubmitting] = useState(false) // Corrected: Removed '=' before useState
   // State to show success message
   const [showSuccess, setShowSuccess] = useState(false)
+
+  useEffect(() => {
+    const saved = localStorage.getItem(POLL_STORAGE_KEY)
+    if (saved) {
+      try {
+        const data = JSON.parse(saved)
+        if (data.roomCode) {
+          setActiveRoomCode(formatRoomCode(data.roomCode))
+        }
+      } catch {
+      }
+    }
+  }, [])
 
   // Array of available question types
   const questionTypes = [
@@ -80,7 +107,10 @@ const CreateManualPoll = () => {
   const validateForm = (): boolean => {
     const newErrors: ValidationErrors = {}
 
-    // Validate title
+    if (!activeRoomCode) {
+      newErrors.roomCode = "Active room code is required"
+    }
+
     if (!pollData.title.trim()) {
       newErrors.title = "Poll question is required"
     }
@@ -132,48 +162,49 @@ const CreateManualPoll = () => {
 
   // Function to handle form submission
   const handleSubmit = async () => {
-    console.log(pollData); // Log current poll data for debugging
-    if (!validateForm()) return; // Validate form before proceeding
+    if (!validateForm()) return
 
-    setIsSubmitting(true); // Set submitting state to true
+    const sanitizedCode = sanitizeRoomCode(activeRoomCode)
+    if (sanitizedCode.length !== 6) {
+      setErrors((prev) => ({ ...prev, roomCode: "Active room code is required" }))
+      return
+    }
+
+    setErrors((prev) => ({ ...prev, roomCode: undefined }))
+    setIsSubmitting(true)
 
     try {
-      // Send poll data to the backend
-      // IMPORTANT: URL updated to match backend routing in index.ts
-      // Port changed from 5001 to 3000, as it's the default port in index.ts.
-      // The base path is now /manual_poll_questions as per index.ts changes.
-      const response = await fetch("http://localhost:3000/manual_poll_questions/save_manual_poll", { // <--- URL changed here
+      const response = await fetch(`${API_BASE_URL}/api/rooms/${sanitizedCode}/questions/manual`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pollData), // Convert pollData object to JSON string
-      });
+        body: JSON.stringify({ ...pollData, roomCode: sanitizedCode }),
+      })
 
-      // Check if the response was successful
       if (!response.ok) {
-        // Log status and status text for more details
-        console.error("Backend response not OK:", response.status, response.statusText);
-        // Attempt to parse error message from backend if available
         try {
-          const errorData = await response.json();
-          console.error("Backend error details:", errorData);
-          throw new Error(errorData.message || "Failed to save poll");
+          const errorData = await response.json()
+          throw new Error(errorData.message || "Failed to save poll")
         } catch (jsonError) {
-          console.error("Could not parse backend error response:", jsonError);
-          throw new Error("Failed to save poll (could not get detailed error from backend)");
+          if (jsonError instanceof Error) {
+            throw jsonError
+          }
+          throw new Error("Failed to save poll")
         }
       }
-      
-      console.log("Manual Poll saved");
-      setShowSuccess(true); // Show success message
 
-      // Scroll to top on success
+      const result = await response.json()
+      if (result.roomCode) {
+        setActiveRoomCode(formatRoomCode(result.roomCode))
+      }
+
+      setShowSuccess(true)
+
       if (typeof window !== "undefined") {
         window.scrollTo({ top: 0, behavior: "smooth" })
       }
 
-      // Reset form after 3 seconds
       setTimeout(() => {
-        setShowSuccess(false);
+        setShowSuccess(false)
         setPollData({
           title: "",
           types: "mcq",
@@ -187,17 +218,14 @@ const CreateManualPoll = () => {
           timerDuration: 30,
           timerUnit: "seconds",
           shortAnswerPlaceholder: "",
-          correctAnswer: undefined, // IMPORTANT: Reset correctAnswer here
-        });
-        setErrors({}); // Clear any validation errors
-      }, 3000);
+          correctAnswer: undefined,
+        })
+        setErrors({})
+      }, 3000)
     } catch (err) {
-      console.error("❌ Error submitting poll:", err);
-      // Using alert() here as per original code, but recommend a custom modal for better UX.
-      // For simplicity, using alert() here as per original code, but recommend a custom modal.
-      alert("Failed to submit poll"); 
+      alert("Failed to submit poll")
     } finally {
-      setIsSubmitting(false); // Reset submitting state
+      setIsSubmitting(false)
     }
   }
 
@@ -322,6 +350,39 @@ const CreateManualPoll = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Main Form Section */}
           <div className="lg:col-span-2 space-y-6">
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              <GlassCard>
+                <div className="p-6 rounded-lg shadow-xl bg-gray-800/50 backdrop-filter backdrop-blur-lg border border-gray-700/50">
+                  <label className="block text-lg font-semibold text-white mb-2">Active Room Code</label>
+                  <input
+                    type="text"
+                    value={activeRoomCode}
+                    onChange={(e) => {
+                      const formatted = formatRoomCode(e.target.value)
+                      setActiveRoomCode(formatted)
+                      if (errors.roomCode) {
+                        setErrors((prev) => ({ ...prev, roomCode: undefined }))
+                      }
+                    }}
+                    placeholder="ABC-123"
+                    className={`w-full px-4 py-3 bg-white/5 border rounded-lg text-white placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500/50 ${errors.roomCode ? "border-red-500/50" : "border-white/10"}`}
+                    maxLength={7}
+                  />
+                  <p className="text-xs text-gray-400 mt-2">Provide the room code linked to this manual poll.</p>
+                  {errors.roomCode && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center space-x-2 mt-2 text-red-400 text-sm"
+                    >
+                      <AlertCircle className="w-4 h-4" />
+                      <span>{errors.roomCode}</span>
+                    </motion.div>
+                  )}
+                </div>
+              </GlassCard>
+            </motion.div>
+
             {/* Poll Question Input */}
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               {/* GlassCard replaced with a div with similar styling */}
